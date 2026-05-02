@@ -4,6 +4,13 @@ import ReactMarkdown from 'react-markdown';
 import './index.css';
 
 function App() {
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL|| 'http://localhost:8000';
+  console.log('Using API Base URL:', API_BASE_URL);
+
+  if (!API_BASE_URL) {
+    console.error('VITE_API_BASE_URL is not defined. Create a .env file at the project root.');
+  }
+
   // Initialize from Local Storage
   const [messages, setMessages] = useState(() => {
     const saved = localStorage.getItem('gemma_chat_history');
@@ -28,22 +35,22 @@ function App() {
   }, [selectedModel]);
 
   // Fetch available models on mount
-  useEffect(() => {
-    const fetchModels = async () => {
-      try {
-        const response = await fetch('http://localhost:8000/models');
-        const data = await response.json();
-        if (data.models) {
-          const names = data.models.map(m => m.name);
-          setAvailableModels(names);
-          if (!selectedModel && names.length > 0) setSelectedModel(names[0]);
-        }
-      } catch (err) {
-        console.error('Failed to fetch models:', err);
-      }
-    };
-    fetchModels();
-  }, []);
+  // useEffect(() => {
+  //   const fetchModels = async () => {
+  //     try {
+  //       const response = await fetch(`${API_BASE_URL}/models`);
+  //       const data = await response.json();
+  //       if (data.models) {
+  //         const names = data.models.map(m => m.name);
+  //         setAvailableModels(names);
+  //         if (!selectedModel && names.length > 0) setSelectedModel(names[0]);
+  //       }
+  //     } catch (err) {
+  //       console.error('Failed to fetch models:', err);
+  //     }
+  //   };
+  //   fetchModels();
+  // }, [API_BASE_URL]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -73,7 +80,7 @@ function App() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8000/chat', {
+      const response = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
