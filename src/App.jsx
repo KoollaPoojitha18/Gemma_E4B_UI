@@ -1,65 +1,47 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, Settings, Send, User, Share2, MoreVertical, Paperclip, ChevronDown, Trash2 } from 'lucide-react';
+import { Plus, Settings, Send, User, Paperclip, Trash2, X, FileText, Image } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import './index.css';
 
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+const ALLOWED_TYPES = ['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml'];
+
 function App() {
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL|| 'http://localhost:8000';
-  console.log('Using API Base URL:', API_BASE_URL);
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
-  if (!API_BASE_URL) {
-    console.error('VITE_API_BASE_URL is not defined. Create a .env file at the project root.');
-  }
-
-  // Initialize from Local Storage
+  // ---------- state ----------
   const [messages, setMessages] = useState(() => {
     const saved = localStorage.getItem('gemma_chat_history');
     return saved ? JSON.parse(saved) : [];
   });
-  
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [availableModels, setAvailableModels] = useState([]);
-  const [selectedModel, setSelectedModel] = useState(localStorage.getItem('gemma_selected_model') || '');
-  
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [fileError, setFileError] = useState('');
+
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
 
-  // Persistence logic
+  // ---------- persistence ----------
   useEffect(() => {
     localStorage.setItem('gemma_chat_history', JSON.stringify(messages));
   }, [messages]);
 
-  useEffect(() => {
-    localStorage.setItem('gemma_selected_model', selectedModel);
-  }, [selectedModel]);
-
-  // Fetch available models on mount
-  // useEffect(() => {
-  //   const fetchModels = async () => {
-  //     try {
-  //       const response = await fetch(`${API_BASE_URL}/models`);
-  //       const data = await response.json();
-  //       if (data.models) {
-  //         const names = data.models.map(m => m.name);
-  //         setAvailableModels(names);
-  //         if (!selectedModel && names.length > 0) setSelectedModel(names[0]);
-  //       }
-  //     } catch (err) {
-  //       console.error('Failed to fetch models:', err);
-  //     }
-  //   };
-  //   fetchModels();
-  // }, [API_BASE_URL]);
-
+  // ---------- auto-scroll ----------
   const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
+  useEffect(() => { scrollToBottom(); }, [messages, isLoading]);
 
+  // ---------- dismiss file error after 3s ----------
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, isLoading]);
+    if (!fileError) return;
+    const t = setTimeout(() => setFileError(''), 3000);
+    return () => clearTimeout(t);
+  }, [fileError]);
 
+  // ---------- textarea auto-resize ----------
   const handleInput = (e) => {
     setInput(e.target.value);
     if (textareaRef.current) {
@@ -68,35 +50,85 @@ function App() {
     }
   };
 
+  // ---------- file selection ----------
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!ALLOWED_TYPES.includes(file.type)) {
+      setFileError('Only PDF and image files are allowed.');
+      e.target.value = '';
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      setFileError('File must be smaller than 5 MB.');
+      e.target.value = '';
+      return;
+    }
+
+    setSelectedFile(file);
+    setFileError('');
+    e.target.value = ''; // allow re-selecting same file
+  };
+
+  const removeFile = () => setSelectedFile(null);
+
+  // ---------- send ----------
   const handleSend = async (e) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    const trimmed = input.trim();
 
-    const userMessage = input.trim();
+    // Message is mandatory for both text-only and file uploads
+    if (!trimmed || isLoading) return;
+
+    // If there's a file but no message, show error
+    if (selectedFile && !trimmed) {
+      setFileError('Please type a message along with your file.');
+      return;
+    }
+
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+
+    // Build user message display
+    const userContent = selectedFile
+      ? `📎 ${selectedFile.name}\n\n${trimmed}`
+      : trimmed;
+    setMessages(prev => [...prev, { role: 'user', content: userContent }]);
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          message: userMessage,
-          model: selectedModel 
-        }),
-      });
+      let data;
 
-      if (!response.ok) throw new Error('Failed to connect to Gemma4');
+      if (selectedFile) {
+        // ---------- /chat-file (multipart) ----------
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        formData.append('mssg', trimmed);
 
-      const data = await response.json();
+        const response = await fetch(`${API_BASE_URL}/chat-file`, {
+          method: 'POST',
+          body: formData,
+        });
+        if (!response.ok) throw new Error('Failed to process file');
+        data = await response.json();
+      } else {
+        // ---------- /chat (JSON) ----------
+        const response = await fetch(`${API_BASE_URL}/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: trimmed }),
+        });
+        if (!response.ok) throw new Error('Failed to connect to Gemma E4B');
+        data = await response.json();
+      }
+
       setMessages(prev => [...prev, { role: 'bot', content: data.response }]);
     } catch (error) {
-      setMessages(prev => [...prev, { role: 'system', content: 'Ops! ' + error.message }]);
+      setMessages(prev => [...prev, { role: 'system', content: 'Oops! ' + error.message }]);
     } finally {
       setIsLoading(false);
+      setSelectedFile(null);
     }
   };
 
@@ -106,29 +138,36 @@ function App() {
     }
   };
 
+  // ---------- helpers ----------
+  const isImageFile = (file) => file?.type?.startsWith('image/');
+
   return (
     <div className="app-container">
-      {/* Sidebar */}
+      {/* ========== Sidebar ========== */}
       <aside className="sidebar">
         <div className="sidebar-header">
           <div className="logo">
             <div className="logo-icon">G</div>
-            <span>Gemma4</span>
+            <span>Gemma E4B</span>
           </div>
-          <button className="new-chat-btn" onClick={() => setMessages([])}>
+          <button className="new-chat-btn" onClick={() => { setMessages([]); setSelectedFile(null); }}>
             <Plus size={18} /> New Chat
           </button>
         </div>
-        
+
         <div className="chat-history">
           <div className="history-item active">Current Conversation</div>
           {messages.length > 0 && (
-            <button className="history-item delete-history" onClick={clearChat} style={{marginTop: 'auto', border: 'none', background: 'none', color: '#ff7675', display: 'flex', alignItems: 'center', gap: '8px'}}>
-               <Trash2 size={14} /> Clear History
+            <button
+              className="history-item delete-history"
+              onClick={clearChat}
+              style={{ marginTop: 'auto', border: 'none', background: 'none', color: '#ff7675', display: 'flex', alignItems: 'center', gap: '8px' }}
+            >
+              <Trash2 size={14} /> Clear History
             </button>
           )}
         </div>
-        
+
         <div className="sidebar-footer">
           <div className="user-profile">
             <div className="avatar">U</div>
@@ -140,31 +179,12 @@ function App() {
         </div>
       </aside>
 
-      {/* Main Chat Area */}
+      {/* ========== Main Chat ========== */}
       <main className="main-chat">
         <header className="chat-header">
-          <div className="model-selector-container">
-            <div className="model-info">
-              <span className="badge">PRO</span>
-              {availableModels.length > 0 ? (
-                <select 
-                  value={selectedModel} 
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className="model-select"
-                >
-                  {availableModels.map(name => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
-                </select>
-              ) : (
-                <h1>{selectedModel || 'Loading Models...'}</h1>
-              )}
-              <ChevronDown size={14} className="select-icon" />
-            </div>
-          </div>
-          <div className="header-actions">
-            <button className="icon-btn"><Share2 size={18} /></button>
-            <button className="icon-btn"><MoreVertical size={18} /></button>
+          <div className="header-title">
+            <div className="header-title-icon">G</div>
+            <h1>GEMMA E4B</h1>
           </div>
         </header>
 
@@ -174,8 +194,8 @@ function App() {
               <div className="message-content">
                 <div className="bot-avatar">G</div>
                 <div className="text">
-                  <h2>Hello! I'm Gemma4.</h2>
-                  <p>I'm powered by your custom model library. You can choose a different model from the dropdown above if you have multiple installed.</p>
+                  <h2>Hello! I'm Gemma E4B.</h2>
+                  <p>Ask me anything or attach a PDF / image to get started.</p>
                   <div className="suggestions">
                     {['Compare these two ideas...', 'Write a story about a robot', 'Help me debug this React code'].map(s => (
                       <button key={s} className="suggestion-chip" onClick={() => setInput(s)}>{s}</button>
@@ -211,14 +231,33 @@ function App() {
           <div ref={messagesEndRef} />
         </div>
 
+        {/* ========== Input Area ========== */}
         <footer className="input-area">
           <form onSubmit={handleSend} className="chat-input-container">
+            {/* File Error Toast */}
+            {fileError && (
+              <div className="file-error">
+                <span>{fileError}</span>
+                <button type="button" onClick={() => setFileError('')}><X size={14} /></button>
+              </div>
+            )}
+
+            {/* File Preview Chip */}
+            {selectedFile && (
+              <div className="file-preview">
+                {isImageFile(selectedFile) ? <Image size={16} /> : <FileText size={16} />}
+                <span className="file-name">{selectedFile.name}</span>
+                <span className="file-size">({(selectedFile.size / 1024).toFixed(0)} KB)</span>
+                <button type="button" className="file-remove" onClick={removeFile}><X size={14} /></button>
+              </div>
+            )}
+
             <div className="input-wrapper">
               <textarea
                 ref={textareaRef}
                 value={input}
                 onChange={handleInput}
-                placeholder="Message Gemma4..."
+                placeholder="Message Gemma E4B..."
                 rows="1"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
@@ -228,13 +267,28 @@ function App() {
                 }}
               />
               <div className="input-actions">
-                <button type="button" className="tool-btn"><Paperclip size={18} /></button>
+                {/* Hidden file input */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,image/*"
+                  onChange={handleFileSelect}
+                  style={{ display: 'none' }}
+                />
+                <button
+                  type="button"
+                  className={`tool-btn ${selectedFile ? 'tool-btn-active' : ''}`}
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach PDF or image (max 5 MB)"
+                >
+                  <Paperclip size={18} />
+                </button>
                 <button type="submit" className="send-btn" disabled={!input.trim() || isLoading}>
                   <Send size={16} />
                 </button>
               </div>
             </div>
-            <p className="disclaimer">Gemma4 can make mistakes. Check important info.</p>
+            <p className="disclaimer">Gemma E4B can make mistakes. Check important info.</p>
           </form>
         </footer>
       </main>
